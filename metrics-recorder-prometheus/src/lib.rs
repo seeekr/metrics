@@ -2,11 +2,13 @@
 use hdrhistogram::Histogram;
 use metrics_core::{Key, Recorder};
 use metrics_util::{parse_quantiles, Quantile};
+use std::collections::HashMap;
 use std::time::SystemTime;
 
 /// Records metrics in the Prometheus exposition format.
 pub struct PrometheusRecorder {
     quantiles: Vec<Quantile>,
+    histograms: HashMap<String, (u64, Histogram<u64>)>,
     output: String,
 }
 
@@ -29,6 +31,7 @@ impl PrometheusRecorder {
         let actual_quantiles = parse_quantiles(quantiles);
         Self {
             quantiles: actual_quantiles,
+            histograms: HashMap::new(),
             output: get_prom_expo_header(),
         }
     }
@@ -58,35 +61,14 @@ impl Recorder for PrometheusRecorder {
     }
 
     fn record_histogram<K: Into<Key>>(&mut self, key: K, values: &[u64]) {
-        let mut sum = 0;
-        let mut h = Histogram::<u64>::new(3).expect("failed to create histogram");
+        let mut parts = self.histograms.entry(key.into().to_string()).or_insert_with(|| {
+            (0, Histogram::<u64>::new(3).expect("failed to create histogram"))
+        });
+
         for value in values {
-            h.record(*value).expect("failed to record histogram value");
-            sum += *value;
+            parts.1.record(*value).expect("failed to record histogram value");
+            parts.0 += *value;
         }
-
-        let label = key.into().as_ref().replace('.', "_");
-        self.output.push_str("\n# TYPE ");
-        self.output.push_str(label.as_str());
-        self.output.push_str(" summary\n");
-
-        for quantile in &self.quantiles {
-            let value = h.value_at_quantile(quantile.value());
-            self.output.push_str(label.as_str());
-            self.output.push_str("{quantile=\"");
-            self.output.push_str(quantile.value().to_string().as_str());
-            self.output.push_str("\"} ");
-            self.output.push_str(value.to_string().as_str());
-            self.output.push_str("\n");
-        }
-        self.output.push_str(label.as_str());
-        self.output.push_str("_sum ");
-        self.output.push_str(sum.to_string().as_str());
-        self.output.push_str("\n");
-        self.output.push_str(label.as_str());
-        self.output.push_str("_count ");
-        self.output.push_str(values.len().to_string().as_str());
-        self.output.push_str("\n");
     }
 }
 
@@ -94,6 +76,7 @@ impl Clone for PrometheusRecorder {
     fn clone(&self) -> Self {
         Self {
             output: get_prom_expo_header(),
+            histograms: HashMap::new(),
             quantiles: self.quantiles.clone(),
         }
     }
@@ -101,7 +84,34 @@ impl Clone for PrometheusRecorder {
 
 impl Into<String> for PrometheusRecorder {
     fn into(self) -> String {
-        self.output
+        let mut output = self.output;
+        let histograms = self.histograms;
+
+        for (name, (sum, h)) in histograms {
+            output.push_str("\n# TYPE ");
+            output.push_str(name.as_str());
+            output.push_str(" summary\n");
+
+            for quantile in &self.quantiles {
+                let value = h.value_at_quantile(quantile.value());
+                output.push_str(name.as_str());
+                output.push_str("{quantile=\"");
+                output.push_str(quantile.value().to_string().as_str());
+                output.push_str("\"} ");
+                output.push_str(value.to_string().as_str());
+                output.push_str("\n");
+            }
+            output.push_str(name.as_str());
+            output.push_str("_sum ");
+            output.push_str(sum.to_string().as_str());
+            output.push_str("\n");
+            output.push_str(name.as_str());
+            output.push_str("_count ");
+            output.push_str(h.len().to_string().as_str());
+            output.push_str("\n");
+        }
+
+        output
     }
 }
 
