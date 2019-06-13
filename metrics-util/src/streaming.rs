@@ -1,5 +1,7 @@
 use std::slice;
 
+const BLOCK_SIZE: usize = 1024;
+
 /// A compressed set of integers.
 ///
 /// For some workloads, working with a large set of integers can require an outsized amount of
@@ -165,7 +167,8 @@ impl StreamingIntegers {
     where
         F: FnMut(&[u64]),
     {
-        let mut values = Vec::with_capacity(1024);
+        let mut first_batch = false;
+        let mut values = Vec::with_capacity(BLOCK_SIZE);
 
         let mut buf_idx = 0;
         let buf_len = self.inner.len();
@@ -182,12 +185,15 @@ impl StreamingIntegers {
 
             values.push(original as u64);
             if values.len() == values.capacity() {
+                first_batch = true;
                 f(&values);
                 values.clear();
             }
         }
 
-        if !values.is_empty() {
+        // Always return an empty vector if we had no values at all, but not if we've
+        // already returned batches and our current `values` is empty.
+        if !values.is_empty() || !first_batch {
             f(&values);
         }
     }
@@ -231,13 +237,18 @@ fn vbyte_decode(buf: &[u8], mut buf_idx: usize) -> (u64, usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::StreamingIntegers;
+    use std::iter;
+    use super::{BLOCK_SIZE, StreamingIntegers};
 
     #[test]
     fn test_streaming_integers_new() {
         let si = StreamingIntegers::new();
         let decompressed = si.decompress();
         assert_eq!(decompressed.len(), 0);
+
+        let mut batches = 0;
+        si.decompress_with(|_| batches += 1);
+        assert_eq!(batches, 1);
     }
 
     #[test]
@@ -251,6 +262,44 @@ mod tests {
 
         let decompressed = si.decompress();
         assert_eq!(decompressed, values);
+
+        let mut batches = 0;
+        si.decompress_with(|_| batches += 1);
+        assert_eq!(batches, 1);
+    }
+
+    #[test]
+    fn test_streaming_integers_single_block_aligned() {
+        let mut si = StreamingIntegers::new();
+        let decompressed = si.decompress();
+        assert_eq!(decompressed.len(), 0);
+
+        let values = iter::repeat(1).take(BLOCK_SIZE).collect::<Vec<_>>();
+        si.compress(&values);
+
+        let decompressed = si.decompress();
+        assert_eq!(decompressed, values);
+
+        let mut batches = 0;
+        si.decompress_with(|_| batches += 1);
+        assert_eq!(batches, 1);
+    }
+
+    #[test]
+    fn test_streaming_integers_single_block_plus_one() {
+        let mut si = StreamingIntegers::new();
+        let decompressed = si.decompress();
+        assert_eq!(decompressed.len(), 0);
+
+        let values = iter::repeat(1).take(BLOCK_SIZE + 1).collect::<Vec<_>>();
+        si.compress(&values);
+
+        let decompressed = si.decompress();
+        assert_eq!(decompressed, values);
+
+        let mut batches = 0;
+        si.decompress_with(|_| batches += 1);
+        assert_eq!(batches, 2);
     }
 
     #[test]
