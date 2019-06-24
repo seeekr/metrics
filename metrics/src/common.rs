@@ -2,6 +2,7 @@ use crate::data::AtomicWindowedHistogram;
 use metrics_util::StreamingIntegers;
 use quanta::Clock;
 use std::borrow::Cow;
+use std::fmt;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -60,13 +61,16 @@ enum ValueState {
     Counter(AtomicU64),
     Gauge(AtomicI64),
     Histogram(AtomicWindowedHistogram),
+    Proxy(ProxyFunction),
 }
 
+/// A snapshot of a single metric.
 #[derive(Debug)]
-pub(crate) enum ValueSnapshot {
+pub enum ValueSnapshot {
     Counter(u64),
     Gauge(i64),
     Histogram(StreamingIntegers),
+    Proxy(ProxyFunction),
 }
 
 #[derive(Clone, Debug)]
@@ -96,6 +100,13 @@ impl MetricValue {
             granularity,
             clock,
         )))
+    }
+
+    pub fn proxy<F>(f: F) -> Self
+    where
+        F: FnMut() -> Vec<(MetricName, ValueSnapshot)> + Send + Sync + 'static,
+    {
+        Self::new(ValueState::Proxy(ProxyFunction::new(f)))
     }
 
     pub fn update_counter(&self, value: u64) {
@@ -134,7 +145,10 @@ impl MetricValue {
             ValueState::Histogram(inner) => {
                 let stream = inner.snapshot();
                 ValueSnapshot::Histogram(stream)
-            }
+            },
+            ValueState::Proxy(inner) => {
+                ValueSnapshot::Proxy(inner.clone())
+            },
         }
     }
 }
@@ -158,6 +172,26 @@ impl Delta for Instant {
     fn delta(&self, other: Instant) -> u64 {
         let dur = *self - other;
         dur.as_nanos() as u64
+    }
+}
+
+#[derive(Clone)]
+struct ProxyFunction {
+    f: Arc<FnMut() -> Vec<(MetricName, ValueSnapshot)> + Send + Sync + 'static>,
+}
+
+impl ProxyFunction {
+    pub fn new<F>(f: F) -> ProxyFunction
+    where
+        F: FnMut() -> Vec<(MetricName, ValueSnapshot)> + Send + Sync + 'static
+    {
+        Self { f: Arc::new(f) }
+    }
+}
+
+impl fmt::Debug for ProxyFunction {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "ProxyFunction({:p})", self.f)
     }
 }
 

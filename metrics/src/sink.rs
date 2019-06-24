@@ -173,6 +173,13 @@ impl Sink {
         self.get_cached_value_handle(identifier).clone().into()
     }
 
+    pub fn proxy<F>(&mut self, f: F)
+    where
+        F: FnMut() -> Vec<(MetricName, ValueSnapshot)> + Send + Sync + 'static
+    {
+        
+    }
+
     fn get_cached_value_handle(&mut self, identifier: MetricIdentifier) -> &MetricValue {
         // This gross hack gets around lifetime rules until full NLL is stable.  Without it, the
         // borrow checker doesn't understand the flow control and thinks the reference lives all
